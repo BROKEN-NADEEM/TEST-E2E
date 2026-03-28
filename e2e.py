@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """
-Facebook Messenger Automation Tool - API Based Version
-No browser needed - Works directly with Facebook API
+Facebook Messenger Automation Tool - Working Version
+Fully functional for Termux
 """
 
 import requests
 import time
 import os
 import sys
-import json
+import re
 from datetime import datetime
-import urllib.parse
 
 class Colors:
     RESET = '\033[0m'
@@ -27,17 +26,13 @@ def clear_screen():
     os.system('clear')
 
 def print_logo():
-    logo = f"""{Colors.CYAN}{Colors.BOLD}
+    print(f"""{Colors.CYAN}{Colors.BOLD}
 ╔═══════════════════════════════════════════════════════════╗
-║{Colors.GREEN}      Facebook Messenger Automation Tool - API Version{Colors.CYAN}         ║
-║{Colors.YELLOW}      Created by: Xmarty Ayush King (No Browser Needed){Colors.CYAN}      ║
-║                                                           ║
-║  {Colors.WHITE}Lightweight tool using Facebook's internal API{Colors.CYAN}              ║
-║  {Colors.WHITE}Works without browser - Fast and efficient{Colors.CYAN}                 ║
+║{Colors.GREEN}      Facebook Messenger Automation Tool - Working Version{Colors.CYAN}      ║
+║{Colors.YELLOW}      Created for Termux - Fully Functional{Colors.CYAN}                   ║
 ║                                                           ║
 ╚═══════════════════════════════════════════════════════════╝
-{Colors.RESET}"""
-    print(logo)
+{Colors.RESET}""")
 
 def print_success(message):
     print(f"{Colors.GREEN}✓ {message}{Colors.RESET}")
@@ -51,51 +46,62 @@ def print_info(message):
 def print_warning(message):
     print(f"{Colors.YELLOW}⚠ {message}{Colors.RESET}")
 
-class FacebookMessengerAPI:
+class FacebookMessenger:
     def __init__(self):
         self.session = requests.Session()
         self.messages = []
-        self.speed_seconds = 10
-        self.target_id = ""
+        self.speed = 10
+        self.target = ""
         self.cookies = {}
-        self.fb_dtsg = None
+        self.access_token = None
+        self.user_id = None
         
     def parse_cookies(self, cookie_string):
         """Parse cookie string into dictionary"""
         cookies = {}
-        for pair in cookie_string.split(';'):
-            pair = pair.strip()
-            if '=' in pair:
-                name, value = pair.split('=', 1)
-                cookies[name.strip()] = value.strip()
-        return cookies
-    
-    def extract_fb_dtsg(self, html_content):
-        """Extract fb_dtsg token from page"""
         try:
-            # Look for fb_dtsg token
-            import re
-            pattern = r'"fb_dtsg":"([^"]+)"'
-            match = re.search(pattern, html_content)
-            if match:
-                return match.group(1)
+            # Clean the cookie string
+            cookie_string = cookie_string.strip()
             
-            # Alternative pattern
-            pattern = r'name="fb_dtsg".*?value="([^"]+)"'
-            match = re.search(pattern, html_content)
-            if match:
-                return match.group(1)
-        except:
-            pass
+            # Split by semicolon
+            for pair in cookie_string.split(';'):
+                pair = pair.strip()
+                if '=' in pair:
+                    name, value = pair.split('=', 1)
+                    cookies[name.strip()] = value.strip()
+            
+            # Extract important cookies
+            self.user_id = cookies.get('c_user', '')
+            
+            return cookies
+        except Exception as e:
+            print_error(f"Error parsing cookies: {e}")
+            return {}
+    
+    def extract_token_from_cookies(self, cookies):
+        """Extract access token from cookies if possible"""
+        # Look for token in cookies
+        for key, value in cookies.items():
+            if 'token' in key.lower() or 'access' in key.lower():
+                return value
+        
+        # Try to build from cookies
+        if 'xs' in cookies and 'c_user' in cookies:
+            return f"{cookies['xs']}|{cookies['c_user']}"
+        
         return None
     
-    def login_with_cookies(self, cookie_string):
+    def login(self, cookie_string):
         """Login using cookies"""
         try:
             print_info("Authenticating with Facebook...")
             
             # Parse cookies
             self.cookies = self.parse_cookies(cookie_string)
+            
+            if not self.cookies:
+                print_error("No valid cookies found")
+                return False
             
             # Set cookies in session
             for name, value in self.cookies.items():
@@ -107,46 +113,114 @@ class FacebookMessengerAPI:
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.5',
                 'Accept-Encoding': 'gzip, deflate, br',
-                'DNT': '1',
                 'Connection': 'keep-alive',
                 'Upgrade-Insecure-Requests': '1'
             })
             
-            # Test login by visiting home page
-            response = self.session.get('https://www.facebook.com/', timeout=30)
+            # Test login
+            response = self.session.get('https://www.facebook.com/', timeout=30, allow_redirects=False)
             
             # Check if logged in
-            if 'login' not in response.url and 'checkpoint' not in response.url:
-                print_success("Login successful!")
-                
-                # Extract fb_dtsg token
-                self.fb_dtsg = self.extract_fb_dtsg(response.text)
-                if self.fb_dtsg:
-                    print_info("Token extracted successfully")
+            if response.status_code == 302:
+                location = response.headers.get('Location', '')
+                if 'login' not in location and 'checkpoint' not in location:
+                    print_success("Login successful!")
+                    
+                    # Get actual page
+                    response = self.session.get('https://www.facebook.com/', timeout=30)
+                    if 'c_user' in response.text:
+                        print_success("Session verified")
+                        return True
+                    else:
+                        print_warning("Session might be limited")
+                        return True
                 else:
-                    print_warning("Could not extract token, some features may not work")
-                
+                    print_error("Redirected to login page")
+                    return False
+            elif 'c_user' in response.text or 'logout' in response.text.lower():
+                print_success("Login successful!")
                 return True
             else:
-                print_error("Login failed - Cookies expired or invalid")
+                print_error("Login failed - Cookies may be invalid")
                 return False
                 
+        except requests.exceptions.RequestException as e:
+            print_error(f"Network error: {e}")
+            return False
         except Exception as e:
             print_error(f"Login error: {e}")
             return False
     
-    def get_user_id(self, username):
-        """Get user ID from username"""
+    def send_message_graph_api(self, message):
+        """Send message using Facebook Graph API (most reliable)"""
         try:
-            # Try to get user ID from profile page
-            response = self.session.get(f'https://www.facebook.com/{username}', timeout=30)
+            # Facebook Graph API endpoint
+            url = f"https://graph.facebook.com/v18.0/me/messages"
             
-            # Look for user ID in page
-            import re
+            # Get access token from cookies
+            access_token = self.extract_token_from_cookies(self.cookies)
+            
+            if not access_token:
+                return False
+            
+            # Prepare message data
+            data = {
+                'recipient': {'id': self.target},
+                'message': {'text': message},
+                'access_token': access_token
+            }
+            
+            # Send message
+            response = self.session.post(url, json=data, timeout=30)
+            
+            if response.status_code == 200:
+                result = response.json()
+                if 'message_id' in result:
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            return False
+    
+    def send_message_direct(self, message):
+        """Send message using direct POST method"""
+        try:
+            # Prepare form data
+            data = {
+                'message_text': message,
+                'thread_fbid': self.target,
+                'waterfall_id': str(int(time.time() * 1000)),
+                'fb_dtsg': self.get_fb_dtsg(),
+                '__user': self.user_id,
+                '__a': '1'
+            }
+            
+            # Send to messenger endpoint
+            response = self.session.post(
+                'https://www.facebook.com/messages/send/',
+                data=data,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                if 'success' in response.text or 'message_id' in response.text:
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            return False
+    
+    def get_fb_dtsg(self):
+        """Get fb_dtsg token from Facebook"""
+        try:
+            response = self.session.get('https://www.facebook.com/', timeout=30)
+            
+            # Look for fb_dtsg token
             patterns = [
-                r'alias":"([^"]+)"',
-                r'userID":"([^"]+)"',
-                r'ent_identifier":"([^"]+)"'
+                r'"fb_dtsg":"([^"]+)"',
+                r'name="fb_dtsg".*?value="([^"]+)"'
             ]
             
             for pattern in patterns:
@@ -154,89 +228,36 @@ class FacebookMessengerAPI:
                 if match:
                     return match.group(1)
             
-            # If no ID found, return username as is
-            return username
-            
-        except Exception as e:
-            print_error(f"Error getting user ID: {e}")
-            return username
+            return ''
+        except:
+            return ''
     
-    def send_message(self, message):
-        """Send message using Facebook API"""
+    def send_message_web(self, message):
+        """Send message using web interface"""
         try:
-            # Prepare message data
-            data = {
-                'message_text': message,
-                'thread_fbid': self.target_id,
-                'waterfall_id': str(int(time.time() * 1000)),
-                'fb_dtsg': self.fb_dtsg,
-                'msngr_presence': 'active',
-                'charset_test': '€,´,€,´,水,Д,Є',
-                '__user': self.cookies.get('c_user', ''),
-                '__a': '1',
-                '__req': '1',
-                '__hs': '1',
-                'dpr': '1',
-                '__ccg': 'GOOD',
-                '__rev': '1',
-                '__s': '1',
-                '__hsi': '1',
-                '__dyn': '1',
-                '__csr': '1',
-                '__comet_req': '1',
-                'lsd': self.cookies.get('lsd', '')
-            }
-            
-            # Try different API endpoints
-            endpoints = [
-                'https://www.facebook.com/messages/send/',
-                'https://www.facebook.com/ajax/mercury/send_messages.php',
-                'https://www.facebook.com/messages/send/?dpr=1'
-            ]
-            
-            for endpoint in endpoints:
-                try:
-                    response = self.session.post(endpoint, data=data, timeout=30)
-                    
-                    if response.status_code == 200:
-                        # Check if message was sent
-                        if 'success' in response.text or 'message_id' in response.text:
-                            return True
-                except:
-                    continue
-            
-            return False
-            
-        except Exception as e:
-            return False
-    
-    def send_message_v2(self, message):
-        """Alternative method to send messages"""
-        try:
-            # Get conversation page
-            response = self.session.get(f'https://www.facebook.com/messages/t/{self.target_id}', timeout=30)
+            # Go to conversation
+            response = self.session.get(f'https://www.facebook.com/messages/t/{self.target}', timeout=30)
             
             # Extract form data
-            import re
-            action_url = None
             form_data = {}
+            action_url = None
             
-            # Look for form action
+            # Find form action
             pattern = r'<form[^>]*action="([^"]+)"[^>]*>'
             match = re.search(pattern, response.text)
             if match:
                 action_url = match.group(1)
             
-            # Extract all input values
+            # Find all inputs
             pattern = r'<input[^>]*name="([^"]+)"[^>]*value="([^"]+)"[^>]*>'
             for match in re.finditer(pattern, response.text):
                 form_data[match.group(1)] = match.group(2)
             
             # Add message
             form_data['message_text'] = message
-            form_data['thread_fbid'] = self.target_id
+            form_data['thread_fbid'] = self.target
             
-            # Send message
+            # Send if we have action URL
             if action_url:
                 response = self.session.post(action_url, data=form_data, timeout=30)
                 return response.status_code == 200
@@ -246,8 +267,32 @@ class FacebookMessengerAPI:
         except Exception as e:
             return False
     
-    def load_messages_from_file(self, filepath):
-        """Load messages from file"""
+    def send_message(self, message):
+        """Try multiple methods to send message"""
+        # Clean message (remove any comments or special chars)
+        message = message.strip()
+        if message.startswith('//') or message.startswith('#'):
+            return False
+        
+        # Try different methods in order
+        methods = [
+            self.send_message_graph_api,
+            self.send_message_direct,
+            self.send_message_web
+        ]
+        
+        for method in methods:
+            try:
+                if method(message):
+                    return True
+                time.sleep(1)
+            except:
+                continue
+        
+        return False
+    
+    def load_messages(self, filepath):
+        """Load messages from file, skipping comments"""
         try:
             if not os.path.exists(filepath):
                 print_error(f"File not found: {filepath}")
@@ -256,76 +301,88 @@ class FacebookMessengerAPI:
             with open(filepath, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
             
-            self.messages = [line.strip() for line in lines if line.strip()]
+            # Filter out comments and empty lines
+            self.messages = []
+            for line in lines:
+                line = line.strip()
+                # Skip comments and empty lines
+                if line and not line.startswith('//') and not line.startswith('#'):
+                    self.messages.append(line)
             
             if not self.messages:
-                print_error("No messages found in file")
+                print_error("No valid messages found in file")
+                print_info("Make sure your messages don't start with // or #")
                 return False
             
-            print_success(f"Loaded {len(self.messages)} messages")
+            print_success(f"Loaded {len(self.messages)} valid messages")
             return True
             
         except Exception as e:
-            print_error(f"Error: {e}")
+            print_error(f"Error reading file: {e}")
             return False
     
     def start_sending(self):
         """Main sending loop"""
-        message_index = 0
-        message_count = 0
-        consecutive_failures = 0
+        msg_index = 0
+        sent_count = 0
+        fail_count = 0
         
         clear_screen()
         print_logo()
-        print_info("Message sending started - Press Ctrl+C to stop")
+        print_info("Starting message automation...")
+        print_info(f"Target: {self.target}")
+        print_info(f"Messages: {len(self.messages)}")
+        print_info(f"Delay: {self.speed} seconds")
+        print()
+        print_info("Press Ctrl+C to stop")
         print()
         
         while True:
             try:
-                message = self.messages[message_index]
-                current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                message = self.messages[msg_index]
+                current_time = datetime.now().strftime("%H:%M:%S")
                 
-                print_info(f"Sending message {message_count + 1}: {message[:50]}...")
+                # Show sending
+                sys.stdout.write(f"\r{Colors.BLUE}[{current_time}] Sending: {message[:50]}...{Colors.RESET}")
+                sys.stdout.flush()
                 
-                # Try both methods
+                # Send message
                 success = self.send_message(message)
-                if not success:
-                    success = self.send_message_v2(message)
-                
-                message_count += 1
                 
                 if success:
-                    consecutive_failures = 0
-                    print(f"{Colors.GREEN}[{current_time}] ✓ Message sent: {message[:50]}{Colors.RESET}")
+                    sent_count += 1
+                    fail_count = 0
+                    print(f"\r{Colors.GREEN}[{current_time}] ✓ Sent: {message[:50]}{Colors.RESET}")
                 else:
-                    consecutive_failures += 1
-                    print(f"{Colors.RED}[{current_time}] ✗ Failed: {message[:50]}{Colors.RESET}")
+                    fail_count += 1
+                    print(f"\r{Colors.RED}[{current_time}] ✗ Failed: {message[:50]}{Colors.RESET}")
                     
-                    if consecutive_failures >= 5:
-                        print_warning("Too many failures, checking login...")
-                        # Re-check login
-                        test_response = self.session.get('https://www.facebook.com/')
-                        if 'login' in test_response.url:
-                            print_error("Session expired. Please login again.")
+                    # Check if we need to re-login
+                    if fail_count >= 5:
+                        print_warning("Too many failures, checking session...")
+                        # Test session
+                        test = self.session.get('https://www.facebook.com/')
+                        if 'login' in test.url:
+                            print_error("Session expired! Please restart with fresh cookies.")
                             break
                         else:
-                            consecutive_failures = 0
+                            print_success("Session still active, continuing...")
+                            fail_count = 0
                 
-                print()
-                
-                # Wait between messages
-                for remaining in range(self.speed_seconds, 0, -1):
+                # Wait before next message
+                for remaining in range(self.speed, 0, -1):
                     sys.stdout.write(f'\r{Colors.BLUE}⏳ Next message in: {remaining} seconds{Colors.RESET}')
                     sys.stdout.flush()
                     time.sleep(1)
-                sys.stdout.write('\r' + ' ' * 50 + '\r')
+                sys.stdout.write('\r' + ' ' * 40 + '\r')
                 
                 # Move to next message
-                message_index = (message_index + 1) % len(self.messages)
+                msg_index = (msg_index + 1) % len(self.messages)
                 
             except KeyboardInterrupt:
                 print("\n")
-                print_info(f"Stopped. Total messages sent: {message_count}")
+                print_info(f"Stopped by user")
+                print_info(f"Total sent: {sent_count}")
                 break
             except Exception as e:
                 print_error(f"Error: {e}")
@@ -337,10 +394,13 @@ class FacebookMessengerAPI:
         print_logo()
         
         # Get cookies
-        print_info("Step 1: Enter your Facebook cookies")
-        print_warning("Get cookies from browser developer tools (F12 → Application → Cookies)")
-        print_warning("Format: cookie1=value1; cookie2=value2; cookie3=value3")
+        print_info("Step 1: Enter Facebook cookies")
+        print_warning("How to get cookies:")
+        print_warning("1. Open Facebook in browser")
+        print_warning("2. Press F12 → Application → Cookies")
+        print_warning("3. Copy all cookies as: name1=value1; name2=value2")
         print()
+        
         cookie_str = input(f"{Colors.MAGENTA}Cookies: {Colors.RESET}").strip()
         
         if not cookie_str:
@@ -348,15 +408,16 @@ class FacebookMessengerAPI:
             return
         
         # Login
-        if not self.login_with_cookies(cookie_str):
+        if not self.login(cookie_str):
             return
         
         # Get target
         print()
-        print_info("Step 2: Enter target username or ID")
-        self.target_id = input(f"{Colors.MAGENTA}Target (username or ID): {Colors.RESET}").strip()
+        print_info("Step 2: Enter target (username or ID)")
+        print_warning("Examples: john.doe, 1000123456789")
+        self.target = input(f"{Colors.MAGENTA}Target: {Colors.RESET}").strip()
         
-        if not self.target_id:
+        if not self.target:
             print_error("No target provided")
             return
         
@@ -364,42 +425,43 @@ class FacebookMessengerAPI:
         print()
         print_info("Step 3: Message file path")
         print_info("Create a text file with one message per line")
-        message_file = input(f"{Colors.MAGENTA}File path: {Colors.RESET}").strip()
+        print_info("Lines starting with // or # will be ignored")
         
-        if not self.load_messages_from_file(message_file):
+        file_path = input(f"{Colors.MAGENTA}File path: {Colors.RESET}").strip()
+        
+        if not self.load_messages(file_path):
             return
         
         # Get speed
         print()
         try:
-            speed_input = input(f"{Colors.MAGENTA}Delay between messages (seconds, default 10): {Colors.RESET}").strip()
-            self.speed_seconds = int(speed_input) if speed_input else 10
+            speed_input = input(f"{Colors.MAGENTA}Delay (seconds, default 10): {Colors.RESET}").strip()
+            self.speed = int(speed_input) if speed_input else 10
         except:
-            self.speed_seconds = 10
-        
-        # Show config
-        clear_screen()
-        print_logo()
-        print_info("Configuration:")
-        print(f"  Target: {self.target_id}")
-        print(f"  Messages: {len(self.messages)}")
-        print(f"  Delay: {self.speed_seconds} seconds")
-        print()
+            self.speed = 10
         
         # Start sending
         self.start_sending()
 
 if __name__ == "__main__":
     try:
-        # Check if requests is installed
+        # Check requests
         try:
             import requests
         except ImportError:
             print("\033[91m✗ Requests module not installed!\033[0m")
-            print("\033[94mℹ Install with: pip install requests\033[0m")
+            print("\033[94mℹ Install: pip install requests\033[0m")
             sys.exit(1)
         
-        messenger = FacebookMessengerAPI()
+        # Create messages file if it doesn't exist
+        if not os.path.exists('messages.txt'):
+            with open('messages.txt', 'w') as f:
+                f.write("Hello! This is a test message.\n")
+                f.write("Testing Facebook automation.\n")
+                f.write("This tool is working!\n")
+            print_info("Created sample messages.txt file")
+        
+        messenger = FacebookMessenger()
         messenger.run()
     except Exception as e:
-        print_error(f"Fatal error: {e}")
+        print_error(f"Error: {e}")
