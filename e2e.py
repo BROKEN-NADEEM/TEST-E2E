@@ -1,29 +1,16 @@
 #!/usr/bin/env python3
 """
-Facebook Messenger Automation Tool - Chromium Version for Termux
-Created by: Xmarty Ayush King
+Facebook Messenger Automation Tool - API Based Version
+No browser needed - Works directly with Facebook API
 """
 
-import json
+import requests
 import time
 import os
 import sys
+import json
 from datetime import datetime
-
-# Try to import selenium
-try:
-    from selenium import webdriver
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.common.keys import Keys
-    from selenium.webdriver.common.action_chains import ActionChains
-    from selenium.webdriver.chrome.options import Options
-    from selenium.webdriver.chrome.service import Service
-    from selenium.webdriver.support.ui import WebDriverWait
-    from selenium.webdriver.support import expected_conditions as EC
-except ImportError:
-    print("\033[91m✗ Selenium not installed!\033[0m")
-    print("\033[94mℹ Install with: pip install selenium\033[0m")
-    sys.exit(1)
+import urllib.parse
 
 class Colors:
     RESET = '\033[0m'
@@ -42,11 +29,11 @@ def clear_screen():
 def print_logo():
     logo = f"""{Colors.CYAN}{Colors.BOLD}
 ╔═══════════════════════════════════════════════════════════╗
-║{Colors.GREEN}      Facebook Messenger Automation Tool - Termux{Colors.CYAN}            ║
-║{Colors.YELLOW}      Created by: Xmarty Ayush King (Chromium Version){Colors.CYAN}      ║
+║{Colors.GREEN}      Facebook Messenger Automation Tool - API Version{Colors.CYAN}         ║
+║{Colors.YELLOW}      Created by: Xmarty Ayush King (No Browser Needed){Colors.CYAN}      ║
 ║                                                           ║
-║  {Colors.WHITE}This tool automates Facebook Messenger messages{Colors.CYAN}            ║
-║  {Colors.WHITE}Using Chromium browser for better compatibility{Colors.CYAN}            ║
+║  {Colors.WHITE}Lightweight tool using Facebook's internal API{Colors.CYAN}              ║
+║  {Colors.WHITE}Works without browser - Fast and efficient{Colors.CYAN}                 ║
 ║                                                           ║
 ╚═══════════════════════════════════════════════════════════╝
 {Colors.RESET}"""
@@ -64,67 +51,203 @@ def print_info(message):
 def print_warning(message):
     print(f"{Colors.YELLOW}⚠ {message}{Colors.RESET}")
 
-def animate_loading(text, duration=2):
-    chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
-    end_time = time.time() + duration
-    i = 0
-    while time.time() < end_time:
-        sys.stdout.write(f'\r{Colors.CYAN}{chars[i % len(chars)]} {text}{Colors.RESET}')
-        sys.stdout.flush()
-        time.sleep(0.1)
-        i += 1
-    sys.stdout.write('\r' + ' ' * (len(text) + 5) + '\r')
-    sys.stdout.flush()
-
-class FacebookMessenger:
+class FacebookMessengerAPI:
     def __init__(self):
-        self.driver = None
-        self.wait = None
+        self.session = requests.Session()
         self.messages = []
         self.speed_seconds = 10
-        self.target_uid = ""
-        self.haters_name = ""
+        self.target_id = ""
+        self.cookies = {}
+        self.fb_dtsg = None
         
-    def check_dependencies(self):
-        """Check if all required dependencies are installed"""
-        # Check Chromium
-        chromium_paths = [
-            '/data/data/com.termux/files/usr/bin/chromium',
-            '/data/data/com.termux/files/usr/lib/chromium/chromium'
-        ]
-        
-        chromium_found = False
-        for path in chromium_paths:
-            if os.path.exists(path):
-                chromium_found = True
-                break
-        
-        if not chromium_found:
-            print_error("Chromium not found")
-            print_info("Install with: pkg install chromium")
+    def parse_cookies(self, cookie_string):
+        """Parse cookie string into dictionary"""
+        cookies = {}
+        for pair in cookie_string.split(';'):
+            pair = pair.strip()
+            if '=' in pair:
+                name, value = pair.split('=', 1)
+                cookies[name.strip()] = value.strip()
+        return cookies
+    
+    def extract_fb_dtsg(self, html_content):
+        """Extract fb_dtsg token from page"""
+        try:
+            # Look for fb_dtsg token
+            import re
+            pattern = r'"fb_dtsg":"([^"]+)"'
+            match = re.search(pattern, html_content)
+            if match:
+                return match.group(1)
+            
+            # Alternative pattern
+            pattern = r'name="fb_dtsg".*?value="([^"]+)"'
+            match = re.search(pattern, html_content)
+            if match:
+                return match.group(1)
+        except:
+            pass
+        return None
+    
+    def login_with_cookies(self, cookie_string):
+        """Login using cookies"""
+        try:
+            print_info("Authenticating with Facebook...")
+            
+            # Parse cookies
+            self.cookies = self.parse_cookies(cookie_string)
+            
+            # Set cookies in session
+            for name, value in self.cookies.items():
+                self.session.cookies.set(name, value, domain='.facebook.com')
+            
+            # Set headers
+            self.session.headers.update({
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1'
+            })
+            
+            # Test login by visiting home page
+            response = self.session.get('https://www.facebook.com/', timeout=30)
+            
+            # Check if logged in
+            if 'login' not in response.url and 'checkpoint' not in response.url:
+                print_success("Login successful!")
+                
+                # Extract fb_dtsg token
+                self.fb_dtsg = self.extract_fb_dtsg(response.text)
+                if self.fb_dtsg:
+                    print_info("Token extracted successfully")
+                else:
+                    print_warning("Could not extract token, some features may not work")
+                
+                return True
+            else:
+                print_error("Login failed - Cookies expired or invalid")
+                return False
+                
+        except Exception as e:
+            print_error(f"Login error: {e}")
             return False
-        
-        # Check ChromeDriver
-        chromedriver_paths = [
-            '/data/data/com.termux/files/usr/bin/chromedriver',
-            '/data/data/com.termux/files/usr/lib/chromium/chromedriver'
-        ]
-        
-        chromedriver_found = False
-        for path in chromedriver_paths:
-            if os.path.exists(path):
-                chromedriver_found = True
-                break
-        
-        if not chromedriver_found:
-            print_error("ChromeDriver not found")
-            print_info("Install with: pkg install chromium-chromedriver")
+    
+    def get_user_id(self, username):
+        """Get user ID from username"""
+        try:
+            # Try to get user ID from profile page
+            response = self.session.get(f'https://www.facebook.com/{username}', timeout=30)
+            
+            # Look for user ID in page
+            import re
+            patterns = [
+                r'alias":"([^"]+)"',
+                r'userID":"([^"]+)"',
+                r'ent_identifier":"([^"]+)"'
+            ]
+            
+            for pattern in patterns:
+                match = re.search(pattern, response.text)
+                if match:
+                    return match.group(1)
+            
+            # If no ID found, return username as is
+            return username
+            
+        except Exception as e:
+            print_error(f"Error getting user ID: {e}")
+            return username
+    
+    def send_message(self, message):
+        """Send message using Facebook API"""
+        try:
+            # Prepare message data
+            data = {
+                'message_text': message,
+                'thread_fbid': self.target_id,
+                'waterfall_id': str(int(time.time() * 1000)),
+                'fb_dtsg': self.fb_dtsg,
+                'msngr_presence': 'active',
+                'charset_test': '€,´,€,´,水,Д,Є',
+                '__user': self.cookies.get('c_user', ''),
+                '__a': '1',
+                '__req': '1',
+                '__hs': '1',
+                'dpr': '1',
+                '__ccg': 'GOOD',
+                '__rev': '1',
+                '__s': '1',
+                '__hsi': '1',
+                '__dyn': '1',
+                '__csr': '1',
+                '__comet_req': '1',
+                'lsd': self.cookies.get('lsd', '')
+            }
+            
+            # Try different API endpoints
+            endpoints = [
+                'https://www.facebook.com/messages/send/',
+                'https://www.facebook.com/ajax/mercury/send_messages.php',
+                'https://www.facebook.com/messages/send/?dpr=1'
+            ]
+            
+            for endpoint in endpoints:
+                try:
+                    response = self.session.post(endpoint, data=data, timeout=30)
+                    
+                    if response.status_code == 200:
+                        # Check if message was sent
+                        if 'success' in response.text or 'message_id' in response.text:
+                            return True
+                except:
+                    continue
+            
             return False
-        
-        return True
+            
+        except Exception as e:
+            return False
+    
+    def send_message_v2(self, message):
+        """Alternative method to send messages"""
+        try:
+            # Get conversation page
+            response = self.session.get(f'https://www.facebook.com/messages/t/{self.target_id}', timeout=30)
+            
+            # Extract form data
+            import re
+            action_url = None
+            form_data = {}
+            
+            # Look for form action
+            pattern = r'<form[^>]*action="([^"]+)"[^>]*>'
+            match = re.search(pattern, response.text)
+            if match:
+                action_url = match.group(1)
+            
+            # Extract all input values
+            pattern = r'<input[^>]*name="([^"]+)"[^>]*value="([^"]+)"[^>]*>'
+            for match in re.finditer(pattern, response.text):
+                form_data[match.group(1)] = match.group(2)
+            
+            # Add message
+            form_data['message_text'] = message
+            form_data['thread_fbid'] = self.target_id
+            
+            # Send message
+            if action_url:
+                response = self.session.post(action_url, data=form_data, timeout=30)
+                return response.status_code == 200
+            
+            return False
+            
+        except Exception as e:
+            return False
     
     def load_messages_from_file(self, filepath):
-        """Load messages from text file"""
+        """Load messages from file"""
         try:
             if not os.path.exists(filepath):
                 print_error(f"File not found: {filepath}")
@@ -143,272 +266,14 @@ class FacebookMessenger:
             return True
             
         except Exception as e:
-            print_error(f"Error reading file: {e}")
+            print_error(f"Error: {e}")
             return False
     
-    def setup_driver(self):
-        """Setup Chrome/Chromium driver for Termux"""
-        try:
-            animate_loading("Initializing browser setup", 1)
-            
-            # Find Chromium binary
-            chromium_binary = '/data/data/com.termux/files/usr/bin/chromium'
-            if not os.path.exists(chromium_binary):
-                chromium_binary = '/data/data/com.termux/files/usr/lib/chromium/chromium'
-            
-            # Find ChromeDriver
-            chromedriver_path = '/data/data/com.termux/files/usr/bin/chromedriver'
-            if not os.path.exists(chromedriver_path):
-                chromedriver_path = '/data/data/com.termux/files/usr/lib/chromium/chromedriver'
-            
-            # Configure Chrome options
-            options = Options()
-            options.binary_location = chromium_binary
-            options.add_argument('--headless=new')  # New headless mode
-            options.add_argument('--no-sandbox')
-            options.add_argument('--disable-dev-shm-usage')
-            options.add_argument('--disable-gpu')
-            options.add_argument('--window-size=1920,1080')
-            options.add_argument('--disable-blink-features=AutomationControlled')
-            options.add_argument('--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
-            
-            # Disable various features for performance
-            options.add_argument('--disable-extensions')
-            options.add_argument('--disable-plugins')
-            options.add_argument('--disable-images')
-            options.add_argument('--disable-javascript')
-            
-            # Performance optimizations
-            prefs = {
-                'profile.default_content_setting_values.notifications': 2,
-                'profile.managed_default_content_settings.images': 2,
-                'disk-cache-size': 4096,
-                'media.cache_size': 4096
-            }
-            options.add_experimental_option('prefs', prefs)
-            
-            # Create service and driver
-            service = Service(executable_path=chromedriver_path)
-            self.driver = webdriver.Chrome(service=service, options=options)
-            self.driver.set_page_load_timeout(60)
-            self.wait = WebDriverWait(self.driver, 20)
-            
-            print_success("Browser setup completed")
-            return True
-            
-        except Exception as e:
-            print_error(f"Setup failed: {e}")
-            print_info("Make sure Chromium and ChromeDriver are installed")
-            return False
-
-    def parse_cookies(self, cookie_string):
-        """Parse cookie string into selenium format"""
-        cookies = []
-        for pair in cookie_string.split(';'):
-            pair = pair.strip()
-            if '=' in pair:
-                name, value = pair.split('=', 1)
-                cookies.append({
-                    'name': name.strip(),
-                    'value': value.strip(),
-                    'domain': '.facebook.com',
-                    'path': '/'
-                })
-        return cookies
-
-    def login_with_cookies(self, cookie_string):
-        """Login to Facebook using cookies"""
-        max_retries = 3
-        retry_count = 0
-        
-        while retry_count < max_retries:
-            try:
-                animate_loading(f"Authenticating with Facebook (Attempt {retry_count + 1}/{max_retries})", 2)
-                
-                # Navigate to Facebook
-                self.driver.get("https://www.facebook.com")
-                time.sleep(3)
-                
-                # Add cookies
-                cookies = self.parse_cookies(cookie_string)
-                for cookie in cookies:
-                    try:
-                        self.driver.add_cookie(cookie)
-                    except:
-                        pass
-                
-                # Refresh to apply cookies
-                self.driver.refresh()
-                time.sleep(4)
-                
-                # Check if logged in
-                try:
-                    # Look for messenger or profile indicator
-                    indicators = [
-                        "//a[@aria-label='Messenger']",
-                        "//div[@aria-label='Account']",
-                        "//a[contains(@href, '/messages')]"
-                    ]
-                    
-                    for indicator in indicators:
-                        try:
-                            if self.driver.find_element(By.XPATH, indicator):
-                                print_success("Login successful!")
-                                return True
-                        except:
-                            continue
-                    
-                    # Alternative check
-                    current_url = self.driver.current_url
-                    if "login" not in current_url and "checkpoint" not in current_url:
-                        print_success("Login successful!")
-                        return True
-                    else:
-                        print_warning(f"Login verification failed (Attempt {retry_count + 1})")
-                        retry_count += 1
-                        if retry_count < max_retries:
-                            time.sleep(5)
-                        continue
-                        
-                except Exception as e:
-                    print_warning(f"Login check failed: {e}")
-                    retry_count += 1
-                    if retry_count < max_retries:
-                        time.sleep(5)
-                    continue
-                
-            except Exception as e:
-                print_error(f"Login error: {e}")
-                retry_count += 1
-                if retry_count < max_retries:
-                    time.sleep(5)
-        
-        return False
-
-    def send_message(self, message):
-        """Send a single message"""
-        try:
-            full_message = f"{self.haters_name} {message}" if self.haters_name else message
-            
-            # Wait for page to load
-            time.sleep(2)
-            
-            # Find message input box
-            message_box = None
-            selectors = [
-                "//div[@aria-label='Message'][@contenteditable='true']",
-                "//div[@role='textbox'][@contenteditable='true']",
-                "//div[contains(@class, 'notranslate')][@contenteditable='true']",
-                "//div[@data-lexical-editor='true']"
-            ]
-            
-            for selector in selectors:
-                try:
-                    elements = self.driver.find_elements(By.XPATH, selector)
-                    for elem in elements:
-                        if elem.is_displayed() and elem.is_enabled():
-                            message_box = elem
-                            break
-                    if message_box:
-                        break
-                except:
-                    continue
-            
-            if not message_box:
-                # Try JavaScript fallback
-                message_box = self.driver.execute_script("""
-                    var editables = document.querySelectorAll('[contenteditable="true"]');
-                    for (var i = 0; i < editables.length; i++) {
-                        if (editables[i].offsetParent !== null && 
-                            (editables[i].getAttribute('role') === 'textbox' || 
-                             editables[i].getAttribute('aria-label') === 'Message')) {
-                            return editables[i];
-                        }
-                    }
-                    return null;
-                """)
-            
-            if not message_box:
-                return False
-            
-            # Scroll to element and focus
-            self.driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", message_box)
-            time.sleep(0.5)
-            
-            # Click and focus
-            try:
-                message_box.click()
-            except:
-                self.driver.execute_script("arguments[0].focus();", message_box)
-            
-            time.sleep(0.5)
-            
-            # Clear existing text
-            self.driver.execute_script("arguments[0].innerHTML = ''; arguments[0].textContent = '';", message_box)
-            time.sleep(0.3)
-            
-            # Type message
-            for char in full_message:
-                message_box.send_keys(char)
-                time.sleep(0.01)  # Small delay for realistic typing
-            
-            time.sleep(0.5)
-            
-            # Send message
-            sent = False
-            
-            # Try Enter key
-            try:
-                message_box.send_keys(Keys.RETURN)
-                sent = True
-            except:
-                pass
-            
-            # Try JavaScript Enter if failed
-            if not sent:
-                try:
-                    self.driver.execute_script("""
-                        var event = new KeyboardEvent('keydown', {
-                            key: 'Enter',
-                            code: 'Enter',
-                            keyCode: 13,
-                            bubbles: true
-                        });
-                        arguments[0].dispatchEvent(event);
-                    """, message_box)
-                    sent = True
-                except:
-                    pass
-            
-            # Try Send button if still not sent
-            if not sent:
-                send_buttons = [
-                    "//div[@aria-label='Send']",
-                    "//button[contains(@aria-label, 'Send')]",
-                    "//div[contains(@aria-label, 'Send')]"
-                ]
-                
-                for selector in send_buttons:
-                    try:
-                        send_btn = self.driver.find_element(By.XPATH, selector)
-                        if send_btn.is_displayed():
-                            send_btn.click()
-                            sent = True
-                            break
-                    except:
-                        continue
-            
-            return sent
-            
-        except Exception as e:
-            return False
-
     def start_sending(self):
         """Main sending loop"""
         message_index = 0
         message_count = 0
         consecutive_failures = 0
-        max_consecutive_failures = 5
         
         clear_screen()
         print_logo()
@@ -420,51 +285,37 @@ class FacebookMessenger:
                 message = self.messages[message_index]
                 current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 
-                # Send message
+                print_info(f"Sending message {message_count + 1}: {message[:50]}...")
+                
+                # Try both methods
                 success = self.send_message(message)
+                if not success:
+                    success = self.send_message_v2(message)
+                
                 message_count += 1
                 
                 if success:
                     consecutive_failures = 0
-                    
-                    # Display formatted output
-                    print(f"{Colors.CYAN}┌─────────────────────────────────────────────────────────┐{Colors.RESET}")
-                    print(f"{Colors.CYAN}│{Colors.RESET} {Colors.YELLOW}Message #{message_count}{Colors.RESET}")
-                    print(f"{Colors.CYAN}│{Colors.RESET}")
-                    print(f"{Colors.CYAN}│{Colors.RESET} {Colors.MAGENTA}Target:{Colors.RESET} {Colors.WHITE}{self.target_uid}{Colors.RESET}")
-                    print(f"{Colors.CYAN}│{Colors.RESET} {Colors.MAGENTA}Message:{Colors.RESET} {Colors.WHITE}{message[:50]}{'...' if len(message) > 50 else ''}{Colors.RESET}")
-                    print(f"{Colors.CYAN}│{Colors.RESET} {Colors.MAGENTA}Time:{Colors.RESET} {Colors.WHITE}{current_time}{Colors.RESET}")
-                    print(f"{Colors.CYAN}│{Colors.RESET} {Colors.MAGENTA}Status:{Colors.RESET} {Colors.GREEN}✓ SENT{Colors.RESET}")
-                    print(f"{Colors.CYAN}└─────────────────────────────────────────────────────────┘{Colors.RESET}")
+                    print(f"{Colors.GREEN}[{current_time}] ✓ Message sent: {message[:50]}{Colors.RESET}")
                 else:
                     consecutive_failures += 1
+                    print(f"{Colors.RED}[{current_time}] ✗ Failed: {message[:50]}{Colors.RESET}")
                     
-                    print(f"{Colors.RED}┌─────────────────────────────────────────────────────────┐{Colors.RESET}")
-                    print(f"{Colors.RED}│{Colors.RESET} {Colors.YELLOW}Message #{message_count}{Colors.RESET}")
-                    print(f"{Colors.RED}│{Colors.RESET}")
-                    print(f"{Colors.RED}│{Colors.RESET} {Colors.MAGENTA}Target:{Colors.RESET} {Colors.WHITE}{self.target_uid}{Colors.RESET}")
-                    print(f"{Colors.RED}│{Colors.RESET} {Colors.MAGENTA}Message:{Colors.RESET} {Colors.WHITE}{message[:50]}{'...' if len(message) > 50 else ''}{Colors.RESET}")
-                    print(f"{Colors.RED}│{Colors.RESET} {Colors.MAGENTA}Time:{Colors.RESET} {Colors.WHITE}{current_time}{Colors.RESET}")
-                    print(f"{Colors.RED}│{Colors.RESET} {Colors.MAGENTA}Status:{Colors.RESET} {Colors.RED}✗ FAILED{Colors.RESET}")
-                    print(f"{Colors.RED}└─────────────────────────────────────────────────────────┘{Colors.RESET}")
-                    
-                    # Refresh if too many failures
-                    if consecutive_failures >= max_consecutive_failures:
-                        print()
-                        print_warning("Too many failures, refreshing page...")
-                        try:
-                            self.driver.refresh()
-                            time.sleep(5)
+                    if consecutive_failures >= 5:
+                        print_warning("Too many failures, checking login...")
+                        # Re-check login
+                        test_response = self.session.get('https://www.facebook.com/')
+                        if 'login' in test_response.url:
+                            print_error("Session expired. Please login again.")
+                            break
+                        else:
                             consecutive_failures = 0
-                            print_success("Page refreshed")
-                        except:
-                            print_error("Could not refresh")
                 
                 print()
                 
-                # Countdown timer
+                # Wait between messages
                 for remaining in range(self.speed_seconds, 0, -1):
-                    sys.stdout.write(f'\r{Colors.BLUE}⏳ Next message in: {Colors.YELLOW}{remaining}{Colors.RESET}{Colors.BLUE} seconds{Colors.RESET}')
+                    sys.stdout.write(f'\r{Colors.BLUE}⏳ Next message in: {remaining} seconds{Colors.RESET}')
                     sys.stdout.flush()
                     time.sleep(1)
                 sys.stdout.write('\r' + ' ' * 50 + '\r')
@@ -477,77 +328,46 @@ class FacebookMessenger:
                 print_info(f"Stopped. Total messages sent: {message_count}")
                 break
             except Exception as e:
-                print_error(f"Unexpected error: {e}")
+                print_error(f"Error: {e}")
                 time.sleep(5)
-
+    
     def run(self):
         """Main execution"""
         clear_screen()
         print_logo()
         
-        # Check dependencies
-        print_info("Checking dependencies...")
-        if not self.check_dependencies():
-            print_error("Missing dependencies. Installing required packages...")
-            print_info("Run: pkg install chromium chromium-chromedriver")
-            return
-        
         # Get cookies
+        print_info("Step 1: Enter your Facebook cookies")
+        print_warning("Get cookies from browser developer tools (F12 → Application → Cookies)")
+        print_warning("Format: cookie1=value1; cookie2=value2; cookie3=value3")
         print()
-        print_info("Step 1: Authentication")
-        print_warning("Get your Facebook cookies from browser developer tools")
-        print_warning("Cookies should be copied as a string (key1=value1; key2=value2)")
-        cookie_str = input(f"{Colors.MAGENTA}Enter cookies: {Colors.RESET}").strip()
+        cookie_str = input(f"{Colors.MAGENTA}Cookies: {Colors.RESET}").strip()
         
         if not cookie_str:
             print_error("No cookies provided")
             return
         
-        # Setup driver
-        print()
-        if not self.setup_driver():
-            return
-        
         # Login
-        print()
         if not self.login_with_cookies(cookie_str):
-            clear_screen()
-            print_logo()
-            print_error("Login failed - Cookies may be expired or invalid")
-            print_info("Get fresh cookies from your browser")
-            if self.driver:
-                self.driver.quit()
             return
         
-        clear_screen()
-        print_logo()
-        print_success("Facebook Login Successful!")
+        # Get target
         print()
+        print_info("Step 2: Enter target username or ID")
+        self.target_id = input(f"{Colors.MAGENTA}Target (username or ID): {Colors.RESET}").strip()
         
-        # Get target UID
-        print_info("Step 2: Target Configuration")
-        self.target_uid = input(f"{Colors.MAGENTA}Enter target UID/Username: {Colors.RESET}").strip()
-        
-        if not self.target_uid:
+        if not self.target_id:
             print_error("No target provided")
-            if self.driver:
-                self.driver.quit()
             return
         
         # Get message file
         print()
-        print_info("Step 3: Message Configuration")
+        print_info("Step 3: Message file path")
         print_info("Create a text file with one message per line")
-        message_file = input(f"{Colors.MAGENTA}Message file path: {Colors.RESET}").strip()
+        message_file = input(f"{Colors.MAGENTA}File path: {Colors.RESET}").strip()
         
         if not self.load_messages_from_file(message_file):
-            if self.driver:
-                self.driver.quit()
             return
-        
-        # Get haters name (optional)
-        print()
-        self.haters_name = input(f"{Colors.MAGENTA}Prefix name (optional): {Colors.RESET}").strip()
         
         # Get speed
         print()
@@ -557,64 +377,29 @@ class FacebookMessenger:
         except:
             self.speed_seconds = 10
         
-        # Show configuration
+        # Show config
         clear_screen()
         print_logo()
-        print_info("Configuration Summary:")
-        print(f"  {Colors.CYAN}Target:{Colors.RESET} {self.target_uid}")
-        print(f"  {Colors.CYAN}Messages:{Colors.RESET} {len(self.messages)}")
-        print(f"  {Colors.CYAN}Prefix:{Colors.RESET} {self.haters_name if self.haters_name else 'None'}")
-        print(f"  {Colors.CYAN}Delay:{Colors.RESET} {self.speed_seconds} seconds")
+        print_info("Configuration:")
+        print(f"  Target: {self.target_id}")
+        print(f"  Messages: {len(self.messages)}")
+        print(f"  Delay: {self.speed_seconds} seconds")
         print()
-        
-        # Open conversation
-        print_info(f"Opening conversation with {self.target_uid}...")
-        max_retries = 3
-        conversation_opened = False
-        
-        for attempt in range(max_retries):
-            try:
-                self.driver.get(f"https://www.facebook.com/messages/t/{self.target_uid}")
-                time.sleep(5)
-                
-                # Check if conversation opened
-                if "messages" in self.driver.current_url:
-                    conversation_opened = True
-                    print_success("Conversation opened")
-                    break
-                else:
-                    print_warning(f"Attempt {attempt + 1} failed, retrying...")
-                    time.sleep(3)
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    print_warning(f"Retrying... ({e})")
-                    time.sleep(3)
-        
-        if not conversation_opened:
-            print_error("Could not open conversation")
-            if self.driver:
-                self.driver.quit()
-            return
-        
-        time.sleep(2)
         
         # Start sending
         self.start_sending()
-        
-        # Cleanup
-        if self.driver:
-            try:
-                animate_loading("Closing browser", 1)
-                self.driver.quit()
-                print_success("Browser closed")
-            except:
-                pass
 
 if __name__ == "__main__":
     try:
-        os.system("clear")
-        messenger = FacebookMessenger()
+        # Check if requests is installed
+        try:
+            import requests
+        except ImportError:
+            print("\033[91m✗ Requests module not installed!\033[0m")
+            print("\033[94mℹ Install with: pip install requests\033[0m")
+            sys.exit(1)
+        
+        messenger = FacebookMessengerAPI()
         messenger.run()
     except Exception as e:
         print_error(f"Fatal error: {e}")
-        sys.exit(1)
